@@ -1,6 +1,6 @@
 {
 	"name": "omp-keysmith",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Versioned system-prompt deployment for OMP",
 	"type": "module",
 	"license": "MIT",

@@ -57,18 +57,92 @@ When `--file` is omitted, `preview` and `deploy` use the bundled `BUILTIN_GPT_UN
 
 | Command | Behavior |
 | --- | --- |
-| `/keysmith status` | Read-only structural, integrity, deployment, and injection status. |
+| `/keysmith status` | Read-only structural, integrity, selected-layer, persistent-switch, and injection status. |
 | `/keysmith preview [--file <path>] [--name <name>]` | Preview a built-in or external prompt without writing. |
-| `/keysmith deploy [--file <path>] [--name <name>] [--dry-run] [--yes]` | Publish an immutable prompt blob, push one deployment layer, and enable it. |
-| `/keysmith enable` | Enable the current deployment for the next agent turn. |
-| `/keysmith disable` | Disable injection without removing deployment history. |
-| `/keysmith uninstall [--yes]` | Remove one owned deployment layer and restore its previous enabled state. |
-| `/keysmith recover [--yes]` | Inspect or remove recognized stale lock and pending-publication residue. |
-| `/keysmith doctor [--fix] [--yes]` | Inspect or remove unreferenced valid prompt blobs. |
+| `/keysmith deploy [--file <path>] [--name <name>] [--dry-run] [--yes]` | Push a new deployment layer, select it, and persistently enable injection. |
+| `/keysmith enable` | Persistently resume the selected deployment without creating a layer. |
+| `/keysmith disable` | Persistently stop injection across turns and sessions while retaining every layer. |
+| `/keysmith uninstall [--yes]` | Pop one owned deployment layer and restore its previous enabled state; the OMP plugin remains installed. |
+| `/keysmith recover [--yes]` | Inspect or remove recognized stale lock and pending-publication residue; deployment layers are unchanged. |
+| `/keysmith doctor [--fix] [--yes]` | Inspect or remove unreferenced valid prompt blobs; selected layers are unchanged. |
 
 `rollback` is accepted as an alias for `uninstall`, and `dry-run` is accepted as an alias for `preview`.
 
-### External prompts
+## Lifecycle and command selection
+
+Keysmith has three separate kinds of state:
+
+1. **Persistent switch** — `enable` and `disable` decide whether the selected prompt is injected. The value is stored in `state.json` and survives future turns and OMP restarts.
+2. **Deployment stack** — every successful `deploy` pushes one layer. `uninstall` or its `rollback` alias pops only the newest layer and restores the enabled state that existed before that layer was deployed.
+3. **OMP plugin package** — the Extension installation is managed by `omp plugin`. `/keysmith uninstall` never removes the package.
+
+The normal pause/resume flow is:
+
+```text
+/keysmith disable
+# Future turns and sessions remain disabled; deployment history is retained.
+
+/keysmith enable
+# The selected layer resumes on the next agent turn; no new layer is created.
+```
+
+Do not run `deploy` merely to resume a disabled prompt. A deploy always adds a layer and sets the persistent switch to enabled.
+
+### State transitions
+
+```text
+No deployment
+  └─ /keysmith deploy ──> layer 1 selected, enabled
+
+Enabled with layers
+  └─ /keysmith disable ─> same layers, persistently disabled
+
+Disabled with layers
+  └─ /keysmith enable ──> same layers, persistently enabled
+
+Any state with layers
+  └─ /keysmith deploy ──> one additional layer selected, enabled
+
+Any state with layers
+  └─ /keysmith uninstall -> newest layer removed, its enabledBefore state restored
+```
+
+### Which command should I use?
+
+| Goal | Command |
+| --- | --- |
+| Pause prompt injection without losing anything | `/keysmith disable` |
+| Keep it disabled after restarting OMP | `/keysmith disable` |
+| Resume the existing selected prompt | `/keysmith enable` |
+| Create the first deployment | `/keysmith deploy` |
+| Deploy a new default or custom prompt version | `/keysmith deploy [--file ...]` |
+| Roll back only the newest prompt version | `/keysmith uninstall` |
+| Remove every deployment layer | Repeat `/keysmith uninstall` until `Deployment layers: 0` |
+| Remove unreferenced retained blobs | `/keysmith doctor --fix` |
+| Remove the Extension package from OMP | Run `omp plugin uninstall omp-keysmith` in a shell |
+
+If every deployment layer has been removed, `enable` has nothing to select and will direct you to deploy first.
+
+### Complete package removal
+
+Optionally remove all managed layers and unreferenced blobs inside OMP:
+
+```text
+/keysmith uninstall
+# Repeat until status reports Deployment layers: 0.
+
+/keysmith doctor --fix
+```
+
+Then remove the Extension package in a shell:
+
+```bash
+omp plugin uninstall omp-keysmith
+```
+
+The plugin-owned `<agent-dir>/keysmith` state directory is intentionally not removed by the package manager. Archive or delete it manually only after confirming that no deployment history or recovery data is needed.
+
+## External prompts
 
 ```text
 /keysmith preview --file ./prompts/reviewer.md --name reviewer

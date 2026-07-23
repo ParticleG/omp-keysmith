@@ -192,14 +192,25 @@ export function parseKeysmithCommand(raw: string): KeysmithCommand {
 
 export function keysmithUsage(): string {
 	return [
-		"/keysmith status",
-		"/keysmith preview [--file <path>] [--name <name>]",
-		"/keysmith deploy [--file <path>] [--name <name>] [--dry-run] [--yes]",
-		"/keysmith enable | disable",
-		"/keysmith uninstall [--yes]",
-		"/keysmith recover [--yes]",
-		"/keysmith doctor [--fix] [--yes]",
+		"Keysmith commands",
+		"  /keysmith status",
+		"  /keysmith preview [--file <path>] [--name <name>]",
+		"  /keysmith deploy [--file <path>] [--name <name>] [--dry-run] [--yes]",
+		"  /keysmith enable | disable",
+		"  /keysmith uninstall [--yes]",
+		"  /keysmith recover [--yes]",
+		"  /keysmith doctor [--fix] [--yes]",
 		"",
-		"When --file is omitted, preview and deploy use codex-keysmith's built-in BUILTIN_GPT_UNRESTRICTED_MD prompt.",
+		"Persistent lifecycle",
+		"  deploy: push a new deployment layer and enable it; omit --file for the bundled prompt.",
+		"  disable: stop injection persistently across turns and sessions, while retaining all layers.",
+		"  enable: resume the selected layer without creating a new deployment.",
+		"  uninstall: pop only the newest deployment layer and restore its previous enabled state.",
+		"",
+		"Package removal",
+		"  /keysmith uninstall does not uninstall the OMP plugin.",
+		"  Run `omp plugin uninstall omp-keysmith` in a shell to remove the Extension package.",
+		"",
+		"Aliases: /keysmith dry-run = preview; /keysmith rollback = uninstall.",
 	].join("\n");
 }

@@ -91,6 +91,26 @@ The store root must be derived from `pi.pi.getAgentDir()` so OMP profiles and `P
 - Enable must verify that an active deployment and valid blob exist.
 - The active blob is revalidated immediately before each turn-level injection.
 
+### Command UX semantics
+
+Command output and documentation must distinguish these independent concepts:
+
+- `enable`/`disable` mutate a persistent switch. They apply across later turns and OMP sessions, retain every deployment layer, and never create a layer.
+- `deploy` always pushes one deployment layer, selects it, and enables injection. It is for first deployment or a new prompt version, not for resuming a disabled layer.
+- `/keysmith uninstall` and `rollback` pop only the newest owned deployment layer and restore that layer's `enabledBefore` value. They do not uninstall the OMP Extension package.
+- `omp plugin uninstall omp-keysmith` is the shell command that removes the package. It does not automatically delete the plugin-owned state directory.
+- `recover` is limited to recognized publication residue. It does not roll back valid deployment layers.
+- `doctor --fix` is limited to unreferenced valid blobs. It does not remove selected layers or uninstall the package.
+
+Status output must show the selected deployment even when injection is disabled. It must also provide a concrete next action:
+
+- no layer: preview, then deploy;
+- disabled with a layer: enable without deploying;
+- enabled with a layer: disable to pause, or deploy only for a new layer;
+- blocked: resolve integrity or structural issues first.
+
+Help, mutation previews, and success messages must state whether a command changes the persistent switch, deployment stack, content-addressed blobs, or installed package. Keep tests for these distinctions so future wording changes cannot reintroduce the lifecycle ambiguity.
+
 ## Code conventions
 
 - Use English for code, comments, tests, documentation, and user-facing messages.

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { parseKeysmithCommand } from "../src/command.ts";
+import { keysmithUsage, parseKeysmithCommand } from "../src/command.ts";
 
 describe("parseKeysmithCommand", () => {
 	test("defaults deploy to the builtin prompt", () => {
@@ -42,5 +42,13 @@ describe("parseKeysmithCommand", () => {
 		expect(() => parseKeysmithCommand("status --yes")).toThrow(
 			"--yes is not valid for this command",
 		);
+	});
+
+	test("help distinguishes persistent toggles, deployment layers, and package removal", () => {
+		const usage = keysmithUsage();
+		expect(usage).toContain("disable: stop injection persistently across turns and sessions");
+		expect(usage).toContain("enable: resume the selected layer without creating a new deployment");
+		expect(usage).toContain("uninstall: pop only the newest deployment layer");
+		expect(usage).toContain("omp plugin uninstall omp-keysmith");
 	});
 });

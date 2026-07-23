@@ -35,14 +35,34 @@ function deploymentLabel(deployment: Deployment | null): string {
 
 function formatStatus(store: PromptStore, status: PromptStoreStatus): string {
 	const state = status.state;
+	const selectedDeployment = state?.deployments.at(-1) ?? null;
+	let injectionState: string;
+	let nextAction: string;
+	if (!status.healthy) {
+		injectionState = "blocked by the integrity or structural issues below";
+		nextAction = "Resolve the blocking issues before changing deployment state.";
+	} else if (!selectedDeployment) {
+		injectionState = "inactive because no deployment layer exists";
+		nextAction = "Run `/keysmith preview`, then `/keysmith deploy` to create the first layer.";
+	} else if (state?.enabled) {
+		injectionState = "active on every agent turn";
+		nextAction = "Run `/keysmith disable` to pause persistently; deploy only when adding a new layer.";
+	} else {
+		injectionState = "disabled persistently across turns and sessions";
+		nextAction = "Run `/keysmith enable` to resume this layer without deploying again.";
+	}
+
 	const lines = [
 		`Store: ${store.rootDir}`,
 		`Initialized: ${status.initialized ? "yes" : "no"}`,
 		`Structural health: ${status.healthy ? "healthy" : "blocked"}`,
-		`Enabled: ${state?.enabled ? "yes" : "no"}`,
-		`Layers: ${state?.deployments.length ?? 0}`,
-		`Active: ${deploymentLabel(status.activeDeployment)}`,
-		`Injection readiness: ${status.activeDeployment && status.healthy ? "ready" : state?.enabled ? "blocked" : "inactive"}`,
+		`Persistent switch: ${state === null ? "not initialized" : state.enabled ? "enabled" : "disabled"}`,
+		`Deployment layers: ${state?.deployments.length ?? 0}`,
+		`Selected deployment: ${deploymentLabel(selectedDeployment)}`,
+		`Turn injection: ${injectionState}`,
+		`Next action: ${nextAction}`,
+		"Layer removal: `/keysmith uninstall` pops one deployment layer; it does not remove the OMP plugin.",
+		"Package removal: run `omp plugin uninstall omp-keysmith` in a shell.",
 	];
 	if (status.pendingFiles.length > 0) lines.push(`Pending publications: ${status.pendingFiles.join(", ")}`);
 	if (status.unreferencedBlobs.length > 0) lines.push(`Unreferenced blobs: ${status.unreferencedBlobs.join(", ")}`);
@@ -57,7 +77,11 @@ function formatStatus(store: PromptStore, status: PromptStoreStatus): string {
 
 function formatPreview(store: PromptStore, preview: PromptPreview, status: PromptStoreStatus): string {
 	const blobPath = path.join(store.promptsDir, `${preview.hash}.md`);
-	const alreadyStored = status.state?.deployments.some((deployment) => deployment.hash === preview.hash) ?? false;
+	const selectedDeployment = status.state?.deployments.at(-1) ?? null;
+	const alreadyStored =
+		(status.state?.deployments.some((deployment) => deployment.hash === preview.hash) ?? false) ||
+		status.unreferencedBlobs.includes(blobPath);
+	const currentLayers = status.state?.deployments.length ?? 0;
 	return [
 		"Keysmith deployment preview",
 		`Store: ${store.rootDir}`,
@@ -66,8 +90,10 @@ function formatPreview(store: PromptStore, preview: PromptPreview, status: Promp
 		`SHA-256: ${preview.hash}`,
 		`Bytes: ${preview.bytes}`,
 		`Blob: ${blobPath} (${alreadyStored ? "reuse existing content" : "publish immutable content"})`,
-		`Current active: ${deploymentLabel(status.activeDeployment)}`,
-		"Plan: push one owned deployment layer, select it as active, and enable turn-level injection.",
+		`Current selected deployment: ${deploymentLabel(selectedDeployment)}`,
+		`Deployment layers: ${currentLayers} -> ${currentLayers + 1}`,
+		"State after deploy: the new layer is selected and injection is enabled persistently.",
+		"Lifecycle note: deploy always pushes a layer. To resume a disabled existing layer, use `/keysmith enable` instead.",
 		`Behavior scope: every OMP agent turn using agent directory ${path.dirname(store.rootDir)}; OMP configuration files and hooks remain untouched.`,
 		preview.source.kind === "builtin" ? BUILTIN_BEHAVIOR_NOTICE : "External prompt content will be injected byte-for-byte after UTF-8 validation.",
 	].join("\n");
@@ -76,6 +102,7 @@ function formatPreview(store: PromptStore, preview: PromptPreview, status: Promp
 function formatRecovery(result: RecoverResult): string {
 	const lines = [
 		`Recovery mode: ${result.apply ? "apply" : "preview"}`,
+		"Scope: publication residue only; valid deployment layers and plugin installation are unchanged.",
 		`Lock: ${result.lockDisposition}${result.lockPath ? ` (${result.lockPath})` : ""}`,
 		`Pending publications: ${result.pendingFiles.length > 0 ? result.pendingFiles.join(", ") : "none"}`,
 	];
@@ -87,6 +114,7 @@ function formatRecovery(result: RecoverResult): string {
 function formatDoctor(result: DoctorResult): string {
 	const lines = [
 		`Doctor mode: ${result.fix ? "fix" : "preview"}`,
+		"Scope: unreferenced blobs only; selected deployment layers and plugin installation are unchanged.",
 		`Unreferenced blobs: ${result.unreferencedBlobs.length > 0 ? result.unreferencedBlobs.join(", ") : "none"}`,
 	];
 	if (result.removed.length > 0) lines.push(`Removed: ${result.removed.join(", ")}`);
@@ -157,11 +185,13 @@ async function handleCommand(
 			const result = await store.deploy(options);
 			ctx.ui.notify(
 				[
-					`Deployed ${result.deployment.name}.`,
+					`Deployed and selected ${result.deployment.name}.`,
 					`SHA-256: ${result.deployment.hash}`,
 					`Blob: ${result.blobCreated ? "created" : "reused"}`,
-					`Layers: ${result.state.deployments.length}`,
-					"The prompt will apply on the next agent turn.",
+					`Deployment layers: ${result.state.deployments.length}`,
+					"Persistent switch: enabled.",
+					"The prompt will apply on the next agent turn and remain enabled across sessions.",
+					"Use `/keysmith disable` to pause without removing this layer; use `/keysmith uninstall` to pop it.",
 				].join("\n"),
 				"info",
 			);
@@ -169,14 +199,34 @@ async function handleCommand(
 			return;
 		}
 		case "enable": {
+			const status = await store.status();
+			if (!status.state || status.state.deployments.length === 0) {
+				ctx.ui.notify("No deployment layer exists. Run `/keysmith preview`, then `/keysmith deploy` first.", "info");
+				return;
+			}
 			const result = await store.setEnabled(true);
-			ctx.ui.notify(result.changed ? "Keysmith injection enabled for the next agent turn." : "Keysmith injection is already enabled.", "info");
+			ctx.ui.notify(
+				result.changed
+					? "Keysmith injection is enabled persistently across future turns and sessions. No deployment layer was created."
+					: "Keysmith injection is already enabled. No deployment layer was created.",
+				"info",
+			);
 			await refreshBadge(store, ctx);
 			return;
 		}
 		case "disable": {
+			const status = await store.status();
+			if (!status.state || status.state.deployments.length === 0) {
+				ctx.ui.notify("No deployment layer exists, so there is no Keysmith prompt to disable.", "info");
+				return;
+			}
 			const result = await store.setEnabled(false);
-			ctx.ui.notify(result.changed ? "Keysmith injection disabled for the next agent turn." : "Keysmith injection is already disabled.", "info");
+			ctx.ui.notify(
+				result.changed
+					? "Keysmith injection is disabled persistently across future turns and sessions. Deployment layers are retained; use `/keysmith enable`, not deploy, to resume."
+					: "Keysmith injection is already disabled. Deployment layers are retained; use `/keysmith enable` to resume.",
+				"info",
+			);
 			await refreshBadge(store, ctx);
 			return;
 		}
@@ -184,19 +234,37 @@ async function handleCommand(
 			const status = await store.status();
 			const current = status.state?.deployments.at(-1);
 			if (!current) {
-				ctx.ui.notify("No managed Keysmith deployment layer is installed.", "info");
+				ctx.ui.notify(
+					"No managed Keysmith deployment layer is installed. `/keysmith uninstall` does not remove the OMP plugin; run `omp plugin uninstall omp-keysmith` in a shell for package removal.",
+					"info",
+				);
 				return;
 			}
+			const remainingLayers = (status.state?.deployments.length ?? 1) - 1;
+			const nextSelected = status.state?.deployments.at(-2) ?? null;
 			const plan = [
-				"Keysmith uninstall preview",
-				`Remove layer: ${deploymentLabel(current)}`,
-				`Restore enabled state: ${current.enabledBefore ? "enabled" : "disabled"}`,
+				"Keysmith layer uninstall preview",
+				`Remove newest layer: ${deploymentLabel(current)}`,
+				`Remaining layers: ${remainingLayers}`,
+				`Next selected deployment: ${deploymentLabel(nextSelected)}`,
+				`Restore persistent switch: ${current.enabledBefore ? "enabled" : "disabled"}`,
 				"Immutable prompt blobs will be retained for recovery and deduplication.",
+				"This removes one deployment layer only. It does not uninstall the OMP plugin package.",
+				"To remove the package, run `omp plugin uninstall omp-keysmith` in a shell.",
 			].join("\n");
-			if (!(await confirmMutation(ctx, command.yes, "Uninstall latest Keysmith layer?", plan))) return;
+			if (!(await confirmMutation(ctx, command.yes, "Remove latest Keysmith deployment layer?", plan))) return;
 			const result = await store.uninstall();
+			const selected = result.state.deployments.at(-1) ?? null;
 			ctx.ui.notify(
-				`Removed layer ${result.removed.name}. Remaining layers: ${result.state.deployments.length}. Injection is ${result.state.enabled ? "enabled" : "disabled"}.`,
+				[
+					`Removed deployment layer ${result.removed.name}.`,
+					`Remaining layers: ${result.state.deployments.length}`,
+					`Selected deployment: ${deploymentLabel(selected)}`,
+					`Persistent switch: ${result.state.enabled ? "enabled" : "disabled"}`,
+					result.state.deployments.length === 0
+						? "No deployment remains; run `/keysmith deploy` before a future enable."
+						: "The OMP plugin remains installed.",
+				].join("\n"),
 				"info",
 			);
 			await refreshBadge(store, ctx);
@@ -237,7 +305,7 @@ export default function keysmithExtension(pi: ExtensionAPI): void {
 	pi.setLabel("Keysmith");
 
 	pi.registerCommand("keysmith", {
-		description: "Preview, deploy, enable, disable, roll back, and verify managed system prompts",
+		description: "Manage persistent, layered system-prompt injection; run /keysmith help for lifecycle guidance",
 		handler: async (raw, ctx) => {
 			try {
 				await handleCommand(store, parseKeysmithCommand(raw), ctx);

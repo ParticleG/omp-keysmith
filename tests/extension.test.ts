@@ -79,7 +79,7 @@ describe("keysmith extension", () => {
 	test("registers its command and lifecycle hooks", async () => {
 		const harness = await makeHarness();
 		expect(harness.labels).toEqual(["Keysmith"]);
-		expect(harness.commands.get("keysmith")?.description).toContain("managed system prompts");
+		expect(harness.commands.get("keysmith")?.description).toContain("persistent, layered");
 		expect(harness.commands.get("keysmith")?.handler).toBeFunction();
 		expect(harness.events.get("session_start")).toBeFunction();
 		expect(harness.events.get("before_agent_start")).toBeFunction();
@@ -93,11 +93,13 @@ describe("keysmith extension", () => {
 		expect(harness.errors).toEqual([]);
 	});
 
-	test("deploys the builtin, appends it after existing blocks, and stops after disable", async () => {
+	test("explains and preserves the persistent enable/disable lifecycle", async () => {
 		const harness = await makeHarness();
 		const command = harness.commands.get("keysmith");
 		expect(command).toBeDefined();
 		await command!.handler("deploy --yes", harness.ctx);
+		expect(harness.notifications.at(-1)?.[0]).toContain("remain enabled across sessions");
+		expect(harness.notifications.at(-1)?.[0]).toContain("/keysmith disable");
 		expect(harness.errors).toEqual([]);
 
 		const existing = ["existing system block one", "existing system block two"];
@@ -117,6 +119,22 @@ describe("keysmith extension", () => {
 		);
 		expect(disabled).toBeUndefined();
 		expect(harness.statusCalls.at(-1)).toEqual(["keysmith", undefined]);
+		expect(harness.notifications.at(-1)?.[0]).toContain("disabled persistently across future turns and sessions");
+		expect(harness.notifications.at(-1)?.[0]).toContain("use `/keysmith enable`, not deploy");
+
+		await command!.handler("status", harness.ctx);
+		expect(harness.notifications.at(-1)?.[0]).toContain("Persistent switch: disabled");
+		expect(harness.notifications.at(-1)?.[0]).toContain("Selected deployment: gpt-unrestricted");
+		expect(harness.notifications.at(-1)?.[0]).toContain("Run `/keysmith enable`");
+
+		await command!.handler("enable", harness.ctx);
+		expect(harness.notifications.at(-1)?.[0]).toContain("enabled persistently across future turns and sessions");
+		expect(harness.notifications.at(-1)?.[0]).toContain("No deployment layer was created");
+		const reenabled = await harness.events.get("before_agent_start")?.(
+			{ systemPrompt: existing },
+			harness.ctx,
+		);
+		expect(reenabled).toEqual({ systemPrompt: [...existing, builtin] });
 	});
 
 	test("resolves relative prompt files from the live OMP cwd", async () => {
@@ -136,5 +154,33 @@ describe("keysmith extension", () => {
 
 		const state = JSON.parse(await readFile(join(harness.agentDir, "keysmith", "state.json"), "utf8"));
 		expect(state.deployments[0].source).toEqual({ kind: "external", path: promptPath });
+	});
+
+	test("guides empty enable and distinguishes layer uninstall from package uninstall", async () => {
+		const harness = await makeHarness();
+		const command = harness.commands.get("keysmith");
+		if (!command) throw new Error("keysmith command was not registered");
+
+		await command.handler("enable", harness.ctx);
+		expect(harness.notifications.at(-1)?.[0]).toContain("No deployment layer exists");
+		expect(harness.notifications.at(-1)?.[0]).toContain("/keysmith deploy");
+
+		await command.handler("deploy --yes", harness.ctx);
+		const customPath = join(harness.workspaceDir, "second.md");
+		await writeFile(customPath, "second prompt\n", "utf8");
+		await command.handler("deploy --file second.md --name second --yes", harness.ctx);
+		await command.handler("uninstall --yes", harness.ctx);
+
+		expect(harness.notifications.at(-1)?.[0]).toContain("Removed deployment layer second");
+		expect(harness.notifications.at(-1)?.[0]).toContain("Remaining layers: 1");
+		expect(harness.notifications.at(-1)?.[0]).toContain("The OMP plugin remains installed");
+
+		await command.handler("uninstall --yes", harness.ctx);
+		expect(harness.notifications.at(-1)?.[0]).toContain("Remaining layers: 0");
+		expect(harness.notifications.at(-1)?.[0]).toContain("/keysmith deploy");
+
+		await command.handler("uninstall --yes", harness.ctx);
+		expect(harness.notifications.at(-1)?.[0]).toContain("/keysmith uninstall` does not remove the OMP plugin");
+		expect(harness.notifications.at(-1)?.[0]).toContain("omp plugin uninstall omp-keysmith");
 	});
 });
